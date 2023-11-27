@@ -1,6 +1,10 @@
+> **_NOTE:_** Use the Wallet Adapter v2.0.0 and up with the Aptos TypeScript SDK V2
+
 # Aptos Wallet Adapter
 
 A monorepo modular wallet adapter developed and maintained by Aptos for wallet and dapp builders that includes:
+
+#### Getting Started
 
 - [Example app](https://github.com/aptos-labs/aptos-wallet-adapter/tree/main/apps/nextjs-example)
 - [For Aptos Dapps](https://github.com/aptos-labs/aptos-wallet-adapter/tree/main/packages/wallet-adapter-react)
@@ -10,15 +14,22 @@ A monorepo modular wallet adapter developed and maintained by Aptos for wallet a
 
 #### Supported wallet packages
 
-- [Petra](https://www.npmjs.com/package/petra-plugin-wallet-adapter)
-- [Trust](https://www.npmjs.com/package/@trustwallet/aptos-wallet-adapter)
-- [Pontem](https://www.npmjs.com/package/@pontem/wallet-adapter-plugin)
-- [Martian](https://www.npmjs.com/package/@martianwallet/aptos-wallet-adapter)
-- [Rise](https://www.npmjs.com/package/@rise-wallet/wallet-adapter)
-- [Spika](https://www.npmjs.com/package/@spika/aptos-plugin)
-- [Fewcha](https://www.npmjs.com/package/fewcha-plugin-wallet-adapter)
-- [MSafe](https://www.npmjs.com/package/msafe-plugin-wallet-adapter)
+Note: These are in alphabetical order, any new wallets must be in alphabetical order
+
 - [Blocto](https://www.npmjs.com/package/@blocto/aptos-wallet-adapter-plugin)
+- [FaceWallet](https://www.npmjs.com/package/@haechi-labs/face-aptos-adapter-plugin)
+- [Fewcha](https://www.npmjs.com/package/fewcha-plugin-wallet-adapter)
+- [Flipper](https://www.npmjs.com/package/@flipperplatform/wallet-adapter-plugin)
+- [Martian](https://www.npmjs.com/package/@martianwallet/aptos-wallet-adapter)
+- [MSafe](https://www.npmjs.com/package/@msafe/aptos-wallet-adapter)
+- [Nightly](https://www.npmjs.com/package/@nightlylabs/aptos-wallet-adapter-plugin)
+- [OpenBlock](https://www.npmjs.com/package/@openblockhq/aptos-wallet-adapter)
+- [Petra](https://www.npmjs.com/package/petra-plugin-wallet-adapter)
+- [Pontem](https://www.npmjs.com/package/@pontem/wallet-adapter-plugin)
+- [Rise](https://www.npmjs.com/package/@rise-wallet/wallet-adapter)
+- [TokenPocket](https://www.npmjs.com/package/@tp-lab/aptos-wallet-adapter)
+- [Trust](https://www.npmjs.com/package/@trustwallet/aptos-wallet-adapter)
+- [WELLDONE](https://www.npmjs.com/package/@welldone-studio/aptos-wallet-adapter)
 
 #### Develop Locally
 

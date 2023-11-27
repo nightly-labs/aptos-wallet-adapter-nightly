@@ -2,45 +2,65 @@ import {
   AccountInfo,
   NetworkInfo,
   WalletInfo,
-  WalletName,
   SignMessagePayload,
   SignMessageResponse,
   Wallet,
   WalletReadyState,
-  NetworkName
+  NetworkName,
+  isInAppBrowser,
+  isRedirectable,
+  isMobile,
+  InputGenerateTransactionOptions,
+  InputGenerateTransactionData,
+  AnyRawTransaction,
+  InputSubmitTransactionData,
+  PendingTransactionResponse,
+  AccountAuthenticator,
+  Types,
+  WalletName,
 } from "@aptos-labs/wallet-adapter-core";
 import { createContext, useContext } from "react";
-import { Types } from "aptos";
 
-export type { WalletName };
-export { WalletReadyState, NetworkName };
+export type { Wallet, WalletName };
+export {
+  WalletReadyState,
+  isInAppBrowser,
+  isRedirectable,
+  isMobile,
+  NetworkName,
+};
 
 export interface WalletContextState {
   connected: boolean;
+  isLoading: boolean;
   account: AccountInfo | null;
   network: NetworkInfo | null;
   connect(walletName: WalletName): void;
   disconnect(): void;
   wallet: WalletInfo | null;
-  wallets: Wallet[];
-  signAndSubmitTransaction<T extends Types.TransactionPayload, V>(
-    transaction: T,
-    options?: V
+  wallets: ReadonlyArray<Wallet>;
+  signAndSubmitTransaction(
+    transaction: InputGenerateTransactionData,
+    options?: InputGenerateTransactionOptions
   ): Promise<any>;
-  signTransaction<T extends Types.TransactionPayload, V>(
-    transaction: T,
-    options?: V
-  ): Promise<any>;
-  signMessage(message: SignMessagePayload): Promise<SignMessageResponse | null>;
+  signTransaction(
+    transactionOrPayload: AnyRawTransaction | Types.TransactionPayload,
+    asFeePayer?: boolean,
+    options?: InputGenerateTransactionOptions
+  ): Promise<AccountAuthenticator>;
+  submitTransaction(
+    transaction: InputSubmitTransactionData
+  ): Promise<PendingTransactionResponse>;
+  signMessage(message: SignMessagePayload): Promise<SignMessageResponse>;
   signMessageAndVerify(message: SignMessagePayload): Promise<boolean>;
 }
 
-const DEFAULT_COUNTEXT = {
+const DEFAULT_CONTEXT = {
   connected: false,
 };
 
 export const WalletContext = createContext<WalletContextState>(
-  DEFAULT_COUNTEXT as WalletContextState
+  DEFAULT_CONTEXT as WalletContextState
 );
 
 export function useWallet(): WalletContextState {

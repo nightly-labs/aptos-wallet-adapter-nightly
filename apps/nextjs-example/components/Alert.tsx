@@ -1,23 +1,21 @@
+import { Dispatch, ReactNode, SetStateAction } from "react";
+
 type Alert = {
-  text: string;
+  text: ReactNode;
+  setText: Dispatch<SetStateAction<ReactNode | null>>;
 };
 
-export function SuccessAlert({ text }: Alert) {
+export function SuccessAlert({ text, setText }: Alert) {
   return (
     <div
       className="bg-teal-100 border border-teal-400 text-teal-900 px-4 py-3 rounded relative"
       role="alert"
     >
-      <span className="block sm:inline break-all right-3">
-        <a
-          className="underline"
-          target="_blank"
-          href={`${text}?network=devnet`}
-        >
-          {text}
-        </a>
-      </span>
-      <span className="absolute top-0 bottom-0 right-0 px-4 py-3">
+      <span className="block sm:inline break-all right-3">{text}</span>
+      <span
+        className="absolute top-0 bottom-0 right-0 px-4 py-3"
+        onClick={() => setText(null)}
+      >
         <svg
           className="fill-current h-6 w-6 text-teal-500"
           role="button"
@@ -32,14 +30,17 @@ export function SuccessAlert({ text }: Alert) {
   );
 }
 
-export function ErrorAlert({ text }: Alert) {
+export function ErrorAlert({ text, setText }: Alert) {
   return (
     <div
       className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative"
       role="alert"
     >
       <span className="block sm:inline break-all">{text}</span>
-      <span className="absolute top-0 bottom-0 right-0 px-4 py-3">
+      <span
+        className="absolute top-0 bottom-0 right-0 px-4 py-3"
+        onClick={() => setText(null)}
+      >
         <svg
           className="fill-current h-6 w-6 text-red-500"
           role="button"

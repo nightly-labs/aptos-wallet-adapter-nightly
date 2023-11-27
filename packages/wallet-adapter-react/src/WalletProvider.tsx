@@ -13,16 +13,23 @@ import type {
   SignMessagePayload,
   Wallet,
   WalletInfo,
+  InputGenerateTransactionOptions,
+  AnyRawTransaction,
+  InputGenerateTransactionData,
+  InputSubmitTransactionData,
+  AccountAuthenticator,
+  PendingTransactionResponse,
+  SignMessageResponse,
   WalletName,
+  Types,
 } from "@aptos-labs/wallet-adapter-core";
 import { WalletCore } from "@aptos-labs/wallet-adapter-core";
 
-import { Types } from "aptos";
-
 export interface AptosWalletProviderProps {
   children: ReactNode;
-  plugins: Wallet[];
+  plugins: ReadonlyArray<Wallet>;
   autoConnect?: boolean;
+  onError?: (error: any) => void;
 }
 
 const initialState: {
@@ -41,60 +48,97 @@ export const AptosWalletAdapterProvider: FC<AptosWalletProviderProps> = ({
   children,
   plugins,
   autoConnect = false,
+  onError,
 }: AptosWalletProviderProps) => {
   const [{ connected, account, network, wallet }, setState] =
     useState(initialState);
 
-  const walletCore = useMemo(() => new WalletCore(plugins), []);
-  const [wallets, setWallets] = useState<Wallet[]>(walletCore.wallets);
+  // a local state to track whether wallet connect request is loading
+  // https://github.com/aptos-labs/aptos-wallet-adapter/issues/94
+  const [isLoading, setIsLoading] = useState<boolean>(true);
 
-  const connect = (walletName: WalletName) => {
+  const walletCore = useMemo(() => new WalletCore(plugins), []);
+  const [wallets, setWallets] = useState<ReadonlyArray<Wallet>>(
+    walletCore.wallets
+  );
+
+  const connect = async (walletName: WalletName) => {
     try {
-      walletCore.connect(walletName);
-    } catch (e) {
-      console.log("connect error", e);
+      setIsLoading(true);
+      await walletCore.connect(walletName);
+    } catch (error: any) {
+      console.log("connect error", error);
+      if (onError) onError(error);
+      return Promise.reject(error);
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  const disconnect = () => {
+  const disconnect = async () => {
     try {
-      walletCore.disconnect();
-    } catch (e) {
-      console.log("disconnect error", e);
+      await walletCore.disconnect();
+    } catch (error) {
+      if (onError) onError(error);
+      return Promise.reject(error);
+    }
+  };
+
+  const signTransaction = async (
+    transaction: AnyRawTransaction | Types.TransactionPayload,
+    asFeePayer?: boolean,
+    options?: InputGenerateTransactionOptions
+  ): Promise<AccountAuthenticator> => {
+    try {
+      return await walletCore.signTransaction(transaction, asFeePayer, options);
+    } catch (error: any) {
+      if (onError) onError(error);
+      return Promise.reject(error);
+    }
+  };
+
+  const signMessage = async (
+    message: SignMessagePayload
+  ): Promise<SignMessageResponse> => {
+    try {
+      return await walletCore.signMessage(message);
+    } catch (error: any) {
+      if (onError) onError(error);
+      return Promise.reject(error);
+    }
+  };
+
+  const signMessageAndVerify = async (
+    message: SignMessagePayload
+  ): Promise<boolean> => {
+    try {
+      return await walletCore.signMessageAndVerify(message);
+    } catch (error: any) {
+      if (onError) onError(error);
+      return Promise.reject(error);
+    }
+  };
+
+  const submitTransaction = async (
+    transaction: InputSubmitTransactionData
+  ): Promise<PendingTransactionResponse> => {
+    try {
+      return await walletCore.submitTransaction(transaction);
+    } catch (error: any) {
+      if (onError) onError(error);
+      return Promise.reject(error);
     }
   };
 
   const signAndSubmitTransaction = async (
-    transaction: Types.TransactionPayload
+    transaction: InputGenerateTransactionData,
+    options?: InputGenerateTransactionOptions
   ) => {
     try {
-      return await walletCore.signAndSubmitTransaction(transaction);
+      return await walletCore.signAndSubmitTransaction(transaction, options);
     } catch (error: any) {
-      throw error;
-    }
-  };
-
-  const signTransaction = async (transaction: Types.TransactionPayload) => {
-    try {
-      return await walletCore.signTransaction(transaction);
-    } catch (error: any) {
-      throw error;
-    }
-  };
-
-  const signMessage = async (message: SignMessagePayload) => {
-    try {
-      return await walletCore.signMessage(message);
-    } catch (error: any) {
-      throw error;
-    }
-  };
-
-  const signMessageAndVerify = async (message: SignMessagePayload) => {
-    try {
-      return await walletCore.signMessageAndVerify(message);
-    } catch (error: any) {
-      throw error;
+      if (onError) onError(error);
+      return Promise.reject(error);
     }
   };
 
@@ -102,16 +146,19 @@ export const AptosWalletAdapterProvider: FC<AptosWalletProviderProps> = ({
     if (autoConnect) {
       if (localStorage.getItem("AptosWalletName")) {
         connect(localStorage.getItem("AptosWalletName") as WalletName);
+      } else {
+        // if we dont use autoconnect set the connect is loading to false
+        setIsLoading(false);
       }
     }
-  }, [wallets]);
+  }, wallets);
 
   useEffect(() => {
     if (connected) {
       walletCore.onAccountChange();
       walletCore.onNetworkChange();
     }
-  }, [wallets, connected]);
+  }, [...wallets, connected]);
 
   // Handle the adapter's connect event
   const handleConnect = () => {
@@ -164,20 +211,11 @@ export const AptosWalletAdapterProvider: FC<AptosWalletProviderProps> = ({
     });
   }, [connected]);
 
-  // Handle the adapter's ready state change event
+  // Whenever the readyState of any supported wallet changes we produce a new wallets state array
+  // which in turn causes consumers of the `useWallet` hook to re-render.
+  // See https://github.com/aptos-labs/aptos-wallet-adapter/pull/129#issuecomment-1519026572 for reasoning.
   const handleReadyStateChange = (wallet: Wallet) => {
-    setWallets((prevWallets) => {
-      const index = prevWallets.findIndex(
-        (currWallet) => currWallet === wallet
-      );
-      if (index === -1) return prevWallets;
-
-      return [
-        ...prevWallets.slice(0, index),
-        wallet,
-        ...prevWallets.slice(index + 1),
-      ];
-    });
+    setWallets((wallets) => [...wallets]);
   };
 
   useEffect(() => {
@@ -193,7 +231,7 @@ export const AptosWalletAdapterProvider: FC<AptosWalletProviderProps> = ({
       walletCore.off("networkChange", handleNetworkChange);
       walletCore.off("readyStateChange", handleReadyStateChange);
     };
-  }, [wallets, connected]);
+  }, [...wallets, connected]);
 
   return (
     <WalletContext.Provider
@@ -209,6 +247,8 @@ export const AptosWalletAdapterProvider: FC<AptosWalletProviderProps> = ({
         signTransaction,
         signMessage,
         signMessageAndVerify,
+        isLoading,
+        submitTransaction,
       }}
     >
       {children}

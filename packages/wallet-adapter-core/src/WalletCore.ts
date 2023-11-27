@@ -1,4 +1,18 @@
-import { HexString, Types } from "aptos";
+import { HexString, TxnBuilderTypes, Types, BCS } from "aptos";
+import {
+  InputGenerateTransactionData,
+  AnyRawTransaction,
+  AccountAuthenticator,
+  AccountAuthenticatorEd25519,
+  Ed25519PublicKey,
+  InputGenerateTransactionOptions,
+  Ed25519Signature,
+  AptosConfig,
+  generateTransactionPayload,
+  InputSubmitTransactionData,
+  PendingTransactionResponse,
+  InputEntryFunctionDataWithRemoteABI,
+} from "@aptos-labs/ts-sdk";
 import EventEmitter from "eventemitter3";
 import nacl from "tweetnacl";
 import { Buffer } from "buffer";
@@ -23,29 +37,38 @@ import {
 import {
   AccountInfo,
   NetworkInfo,
-  WalletName,
   SignMessagePayload,
-  SignMessageResponse,
   Wallet,
   WalletInfo,
   WalletCoreEvents,
+  SignMessageResponse,
 } from "./types";
 import {
   removeLocalStorage,
   setLocalStorage,
   scopePollingDetectionStrategy,
+  isRedirectable,
+  generalizedErrorMessage,
 } from "./utils";
+import { getNameByAddress } from "./ans";
+import {
+  convertNetwork,
+  convertV2TransactionPayloadToV1BCSPayload,
+  convertV2PayloadToV1JSONPayload,
+} from "./conversion";
+import { WalletCoreV1 } from "./WalletCoreV1";
 
 export class WalletCore extends EventEmitter<WalletCoreEvents> {
-  private _wallets: Wallet[] = [];
+  private _wallets: ReadonlyArray<Wallet> = [];
   private _wallet: Wallet | null = null;
   private _account: AccountInfo | null = null;
   private _network: NetworkInfo | null = null;
+  private readonly waletCoreV1: WalletCoreV1 = new WalletCoreV1();
 
   private _connecting: boolean = false;
   private _connected: boolean = false;
 
-  constructor(plugins: Wallet[]) {
+  constructor(plugins: ReadonlyArray<Wallet>) {
     super();
     this._wallets = plugins;
     this.scopePollingDetectionStrategy();
@@ -95,6 +118,16 @@ export class WalletCore extends EventEmitter<WalletCoreEvents> {
     removeLocalStorage();
   }
 
+  private async setAnsName() {
+    if (this._network?.chainId && this._account) {
+      const name = await getNameByAddress(
+        this._network.chainId,
+        this._account.address
+      );
+      this._account.ansName = name;
+    }
+  }
+
   setWallet(wallet: Wallet | null) {
     this._wallet = wallet;
   }
@@ -111,7 +144,7 @@ export class WalletCore extends EventEmitter<WalletCoreEvents> {
     return this._connected;
   }
 
-  get wallets(): Wallet[] {
+  get wallets(): ReadonlyArray<Wallet> {
     return this._wallets;
   }
 
@@ -159,52 +192,80 @@ export class WalletCore extends EventEmitter<WalletCoreEvents> {
     }
   }
 
-  /** 
-  Connects a wallet to the app. If a wallet is already connected,
-  we first disconnect the current connected wallet and then connect the selected wallet.
-  On connect success, we set the current account and the network, and keeping the selected wallet
-  name in LocalStorage to support autoConnect function.
+  /**
+   * We first make sure we can connect a dapp to a wallet.
+   * If all good, we connect the wallet by calling `this.connectWallet`
+   * @param walletName. The wallet name we want to connect.
+   */
+  async connect(walletName: string): Promise<void | string> {
+    const selectedWallet = this._wallets?.find(
+      (wallet: Wallet) => wallet.name === walletName
+    );
 
-  @param walletName. The wallet name we want to connect as a WalletName type.
-  @emit emits "connect" event
-  @throws WalletConnectionError
-  */
-  async connect(walletName: WalletName): Promise<void> {
+    if (!selectedWallet) return;
+
+    if (this._connected) {
+      // if the selected wallet is already connected, we don't need to connect again
+      if (selectedWallet.name === walletName)
+        throw new WalletConnectionError(
+          `${walletName} wallet is already connected`
+        ).message;
+    }
+
+    // check if we are in a redirectable view (i.e on mobile AND not in an in-app browser) and
+    // since wallet readyState can be NotDetected, we check it before the next check
+    if (isRedirectable()) {
+      // use wallet deep link
+      if (selectedWallet.deeplinkProvider) {
+        const url = encodeURIComponent(window.location.href);
+        const location = selectedWallet.deeplinkProvider({ url });
+        window.location.href = location;
+      }
+    }
+    if (
+      selectedWallet.readyState !== WalletReadyState.Installed &&
+      selectedWallet.readyState !== WalletReadyState.Loadable
+    ) {
+      return;
+    }
+
+    // Now we can connect to the wallet
+    await this.connectWallet(selectedWallet);
+  }
+
+  /**
+   * Connects a wallet to the dapp.
+   * On connect success, we set the current account and the network, and keeping the selected wallet
+   * name in LocalStorage to support autoConnect function.
+   *
+   * @param selectedWallet. The wallet we want to connect.
+   * @emit emits "connect" event
+   * @throws WalletConnectionError
+   */
+  async connectWallet(selectedWallet: Wallet) {
     try {
-      const selectedWallet = this._wallets?.find(
-        (wallet: Wallet) => wallet.name === walletName
-      );
-
-      if (
-        !selectedWallet ||
-        (selectedWallet.readyState !== WalletReadyState.Installed &&
-          selectedWallet.readyState !== WalletReadyState.Loadable)
-      ) {
-        return;
-      }
-
-      if (this._connected) {
-        await this.disconnect();
-      }
       this._connecting = true;
       this.setWallet(selectedWallet);
       const account = await selectedWallet.connect();
       this.setAccount({ ...account });
       const network = await selectedWallet.network();
       this.setNetwork({ ...network });
+      await this.setAnsName();
       setLocalStorage(selectedWallet.name);
       this._connected = true;
       this.emit("connect", account);
     } catch (error: any) {
       this.clearData();
-      throw new WalletConnectionError(error).message;
+
+      const errMsg = generalizedErrorMessage(error);
+      throw new WalletConnectionError(errMsg).message;
     } finally {
       this._connecting = false;
     }
   }
 
-  /** 
-  Disconnect the exisitng wallet. On success, we clear the 
+  /**
+  Disconnect the exisitng wallet. On success, we clear the
   current account, current network and LocalStorage data.
   @emit emits "disconnect" event
   @throws WalletDisconnectionError
@@ -216,80 +277,207 @@ export class WalletCore extends EventEmitter<WalletCoreEvents> {
       this.clearData();
       this.emit("disconnect");
     } catch (error: any) {
-      throw new WalletDisconnectionError(error).message;
+      const errMsg = generalizedErrorMessage(error);
+      throw new WalletDisconnectionError(errMsg).message;
     }
   }
 
-  /** 
-  Sign and submit transaction to chain.
-  @param transaction
-  @return response from the wallet's signAndSubmitTransaction function
-  @throws WalletSignAndSubmitMessageError
-  */
+  /**
+   * Signs and submits a transaction to chain
+   *
+   * @param transactionInput InputGenerateTransactionData
+   * @param options optional. A configuration object to generate a transaction by
+   * @returns The pending transaction hash (V1 output) | PendingTransactionResponse (V2 output)
+   */
   async signAndSubmitTransaction(
-    transaction: Types.TransactionPayload
-  ): Promise<any> {
+    transactionInput: InputGenerateTransactionData,
+    options?: InputGenerateTransactionOptions
+  ): Promise<
+    { hash: Types.HexEncodedBytes; output?: any } | PendingTransactionResponse
+  > {
     try {
       this.doesWalletExist();
-      const response = await this._wallet?.signAndSubmitTransaction(
-        transaction
+
+      // wallet supports sdk v2
+      if (this._wallet?.version === "v2") {
+        const response = await this._wallet.signAndSubmitTransaction(
+          transactionInput,
+          options
+        );
+        // response should be PendingTransactionResponse
+        return response;
+      }
+
+      // get the payload piece from the input
+      const payloadData = transactionInput.data;
+
+      // if first function arguments is an object (i.e a bcs serialized argument)
+      // we assume the transaction should be a bcs serialized transaction
+      if (typeof payloadData.functionArguments[0] === "object") {
+        const aptosConfig = new AptosConfig({
+          network: convertNetwork(this._network),
+        });
+        const newPayload = await generateTransactionPayload({
+          ...(payloadData as InputEntryFunctionDataWithRemoteABI),
+          aptosConfig: aptosConfig,
+        });
+        const oldTransactionPayload =
+          convertV2TransactionPayloadToV1BCSPayload(newPayload);
+        const response = await this.waletCoreV1.signAndSubmitBCSTransaction(
+          oldTransactionPayload,
+          this._wallet!,
+          {
+            max_gas_amount: options?.maxGasAmount
+              ? BigInt(options?.maxGasAmount)
+              : undefined,
+            gas_unit_price: options?.gasUnitPrice
+              ? BigInt(options?.gasUnitPrice)
+              : undefined,
+          }
+        );
+        const { hash, ...output } = response;
+        return { hash, output };
+      }
+
+      // if it is not a bcs serialized arguments transaction, convert to the old
+      // json format
+      const oldTransactionPayload =
+        convertV2PayloadToV1JSONPayload(payloadData);
+      const response = await this.waletCoreV1.signAndSubmitTransaction(
+        oldTransactionPayload,
+        this._wallet!,
+        {
+          max_gas_amount: options?.maxGasAmount
+            ? BigInt(options?.maxGasAmount)
+            : undefined,
+          gas_unit_price: options?.gasUnitPrice
+            ? BigInt(options?.gasUnitPrice)
+            : undefined,
+        }
       );
-      return response;
+      const { hash, ...output } = response;
+      return { hash, output };
     } catch (error: any) {
-      const errMsg =
-        typeof error == "object" && "message" in error ? error.message : error;
+      const errMsg = generalizedErrorMessage(error);
       throw new WalletSignAndSubmitMessageError(errMsg).message;
     }
   }
 
-  /** 
-  Sign transaction (doesnt submit to chain).
-  @param transaction
-  @return response from the wallet's signTransaction function
-  @throws WalletSignTransactionError
-  */
+  /**
+   * Signs a transaction
+   *
+   * To support both existing wallet adapter V1 and V2, we support 2 input types
+   *
+   * @param transactionOrPayload AnyRawTransaction - V2 input | Types.TransactionPayload - V1 input
+   * @param options optional. V1 input
+   *
+   * @returns AccountAuthenticator
+   */
   async signTransaction(
-    transaction: Types.TransactionPayload
-  ): Promise<Uint8Array | null> {
-    if (this._wallet && !("signTransaction" in this._wallet)) {
-      throw new WalletNotSupportedMethod(
-        `Sign Transaction is not supported by ${this.wallet?.name}`
-      ).message;
-    }
-
+    transactionOrPayload: AnyRawTransaction | Types.TransactionPayload,
+    asFeePayer?: boolean,
+    options?: InputGenerateTransactionOptions
+  ): Promise<AccountAuthenticator> {
     try {
       this.doesWalletExist();
-      const response = await (this._wallet as any).signTransaction(transaction);
-      return response;
+      // if input is AnyRawTransaction, i.e V2
+      if ("rawTransaction" in transactionOrPayload) {
+        if (this._wallet?.version !== "v2") {
+          throw new WalletNotSupportedMethod(
+            `Sign Transaction V2 is not supported by ${this.wallet?.name}`
+          ).message;
+        }
+        const accountAuthenticator = (this._wallet as any).signTransaction(
+          transactionOrPayload,
+          asFeePayer
+        );
+
+        return accountAuthenticator;
+      }
+
+      // check current signTransaction function exists
+      if (this._wallet && !("signTransaction" in this._wallet)) {
+        throw new WalletNotSupportedMethod(
+          `Sign Transaction is not supported by ${this.wallet?.name}`
+        ).message;
+      }
+
+      const response = await this.waletCoreV1.signTransaction(
+        transactionOrPayload as Types.TransactionPayload,
+        this._wallet!,
+        {
+          max_gas_amount: options?.maxGasAmount
+            ? BigInt(options?.maxGasAmount)
+            : undefined,
+          gas_unit_price: options?.gasUnitPrice
+            ? BigInt(options?.gasUnitPrice)
+            : undefined,
+        }
+      );
+      if (!response) {
+        throw new Error("error");
+      }
+
+      // Convert retuned bcs serialized SignedTransaction into V2 AccountAuthenticator
+      const deserializer1 = new BCS.Deserializer(response);
+      const deserializedSignature =
+        TxnBuilderTypes.SignedTransaction.deserialize(deserializer1);
+      const transactionAuthenticator =
+        deserializedSignature.authenticator as TxnBuilderTypes.TransactionAuthenticatorEd25519;
+
+      const publicKey = transactionAuthenticator.public_key.value;
+      const signature = transactionAuthenticator.signature.value;
+
+      const accountAuthenticator = new AccountAuthenticatorEd25519(
+        new Ed25519PublicKey(publicKey),
+        new Ed25519Signature(signature)
+      );
+      return accountAuthenticator;
     } catch (error: any) {
-      const errMsg =
-        typeof error == "object" && "message" in error ? error.message : error;
+      const errMsg = generalizedErrorMessage(error);
       throw new WalletSignTransactionError(errMsg).message;
     }
   }
 
-  /** 
-  Sign message (doesnt submit to chain).
-  @param message
-  @return response from the wallet's signMessage function
-  @throws WalletSignMessageError
-  */
-  async signMessage(
-    message: SignMessagePayload
-  ): Promise<SignMessageResponse | null> {
+  /**
+   Sign message (doesnt submit to chain).
+   @param message
+   @return response from the wallet's signMessage function
+   @throws WalletSignMessageError
+   */
+  async signMessage(message: SignMessagePayload): Promise<SignMessageResponse> {
     try {
       this.doesWalletExist();
-      if (!this._wallet) return null;
-      const response = await this._wallet?.signMessage(message);
+      const response = await this._wallet!.signMessage(message);
       return response;
     } catch (error: any) {
-      const errMsg =
-        typeof error == "object" && "message" in error ? error.message : error;
+      const errMsg = generalizedErrorMessage(error);
       throw new WalletSignMessageError(errMsg).message;
     }
   }
 
-  /** 
+  async submitTransaction(
+    transaction: InputSubmitTransactionData
+  ): Promise<PendingTransactionResponse> {
+    if (this._wallet && !("submitTransaction" in this._wallet)) {
+      throw new WalletNotSupportedMethod(
+        `Submit Transaction is not supported by ${this.wallet?.name}`
+      ).message;
+    }
+    try {
+      this.doesWalletExist();
+      const pendingTransaction = (this._wallet as any).submitTransaction(
+        transaction
+      );
+
+      return pendingTransaction;
+    } catch (error: any) {
+      const errMsg = generalizedErrorMessage(error);
+      throw new WalletSignTransactionError(errMsg).message;
+    }
+  }
+
+  /**
   Event for when account has changed on the wallet
   @return the new account info
   @throws WalletAccountChangeError
@@ -297,18 +485,18 @@ export class WalletCore extends EventEmitter<WalletCoreEvents> {
   async onAccountChange(): Promise<void> {
     try {
       this.doesWalletExist();
-      await this._wallet?.onAccountChange((data: AccountInfo) => {
+      await this._wallet?.onAccountChange(async (data: AccountInfo) => {
         this.setAccount({ ...data });
+        await this.setAnsName();
         this.emit("accountChange", this._account);
       });
     } catch (error: any) {
-      const errMsg =
-        typeof error == "object" && "message" in error ? error.message : error;
+      const errMsg = generalizedErrorMessage(error);
       throw new WalletAccountChangeError(errMsg).message;
     }
   }
 
-  /** 
+  /**
   Event for when network has changed on the wallet
   @return the new network info
   @throws WalletNetworkChangeError
@@ -316,17 +504,22 @@ export class WalletCore extends EventEmitter<WalletCoreEvents> {
   async onNetworkChange(): Promise<void> {
     try {
       this.doesWalletExist();
-      await this._wallet?.onNetworkChange((data: NetworkInfo) => {
+      await this._wallet?.onNetworkChange(async (data: NetworkInfo) => {
         this.setNetwork({ ...data });
+        await this.setAnsName();
         this.emit("networkChange", this._network);
       });
     } catch (error: any) {
-      const errMsg =
-        typeof error == "object" && "message" in error ? error.message : error;
+      const errMsg = generalizedErrorMessage(error);
       throw new WalletNetworkChangeError(errMsg).message;
     }
   }
 
+  /**
+   * Signs a message and verifies the signer
+   * @param message SignMessagePayload
+   * @returns boolean
+   */
   async signMessageAndVerify(message: SignMessagePayload): Promise<boolean> {
     try {
       this.doesWalletExist();
@@ -391,8 +584,7 @@ export class WalletCore extends EventEmitter<WalletCoreEvents> {
       }
       return verified;
     } catch (error: any) {
-      const errMsg =
-        typeof error == "object" && "message" in error ? error.message : error;
+      const errMsg = generalizedErrorMessage(error);
       throw new WalletSignMessageAndVerifyError(errMsg).message;
     }
   }
